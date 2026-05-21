@@ -69,45 +69,44 @@ static const char* kVizFrag = R"glsl(
 #version 410 core
 uniform sampler2D DepthTex;   // unit 0 – R32F normalised depth
 uniform sampler2D VideoTex;   // unit 1 – original input
-uniform vec2  MaxUV;          // HW padding correction for VideoTex
+uniform vec2  MaxUV;
 
 uniform int   Invert;
-uniform float DepthNear;      // C4D-OC style depth range low
-uniform float DepthFar;       // C4D-OC style depth range high
-uniform float ScanLine;       // <0.5 = Z-depth mode  >=0.5 = scan-line mode
+uniform float DepthNear;      // Z-depth only: depth range low  (C4D OC style)
+uniform float DepthFar;       // Z-depth only: depth range high (C4D OC style)
+uniform float ScanLine;       // boolean: 0=Z-depth mode  1=scan-line mode
 
-// scan-line sub-uniforms (only used when ScanLine >= 0.5)
 uniform float Effect;    // 0=h-lines  0.33=warped  0.66=circular  1=dots
 uniform float Density;
 uniform float Width;
 uniform float Warp;
-uniform float Offset;
+uniform float Offset;    // BPM bounce
 uniform float Sweep;     // >0.5 = depth-slice sweep ON
 uniform float SweepDir;  // >0.5 = near→far  else far→near
-uniform float Blend;     // 0=effect on black  1=overlay on video
+uniform float Blend;     // 0=lines on black  1=overlay on video
 
 in  vec2 vUV;
 out vec4 fragColor;
 
 void main() {
-    float range = max(DepthFar - DepthNear, 0.001);
-
-    // Flip Y: GL tex row-0=bottom, model row-0=top
-    float d = texture(DepthTex, vec2(vUV.x, 1.0 - vUV.y)).r;
-    if (Invert == 1) d = 1.0 - d;
-    d = clamp((d - DepthNear) / range, 0.0, 1.0);
+    // Raw depth sample – flip Y (GL tex row-0=bottom, model row-0=top)
+    float rawD = texture(DepthTex, vec2(vUV.x, 1.0 - vUV.y)).r;
+    if (Invert == 1) rawD = 1.0 - rawD;
 
     // ════════════════════════════════════════════════════════════════════
-    //  Z-DEPTH MODE  (ScanLine < 0.5)
+    //  Z-DEPTH MODE  –  Near/Far remapping applies HERE ONLY
     // ════════════════════════════════════════════════════════════════════
     if (ScanLine < 0.5) {
+        float range = max(DepthFar - DepthNear, 0.001);
+        float d = clamp((rawD - DepthNear) / range, 0.0, 1.0);
         fragColor = vec4(d, d, d, 1.0);
         return;
     }
 
     // ════════════════════════════════════════════════════════════════════
-    //  SCAN-LINE MODE  (ScanLine >= 0.5)
+    //  SCAN-LINE MODE  –  uses raw depth, Near/Far not applied
     // ════════════════════════════════════════════════════════════════════
+    float d    = rawD;
     vec4 video = texture(VideoTex, vUV * MaxUV);
     vec3 bg    = mix(vec3(0.0), video.rgb, Blend);
 
@@ -116,7 +115,7 @@ void main() {
     float sweepDepth  = d;
 
     if (Effect < 0.85) {
-        // ── Lines family ──────────────────────────────────────────────
+        // Lines family
         float dens = Density * 50.0 + 2.0;
         float lc;
         if (Effect < 0.33) {
@@ -130,7 +129,7 @@ void main() {
         effectMask  = 1.0 - smoothstep(lineW * 0.7, lineW, min(lc, 1.0 - lc));
 
     } else {
-        // ── LED dot matrix ────────────────────────────────────────────
+        // LED dot matrix
         float gridN  = Density * 60.0 + 4.0;
         vec2  cell   = floor(vUV * gridN);
         vec2  cellUV = fract(vUV * gridN);
@@ -138,7 +137,6 @@ void main() {
 
         float dc = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
         if (Invert == 1) dc = 1.0 - dc;
-        dc = clamp((dc - DepthNear) / range, 0.0, 1.0);
         sweepDepth = dc;
 
         float dotR  = max(Width * 0.5, 0.02);
@@ -146,13 +144,12 @@ void main() {
         effectColor = texture(VideoTex, ctr * MaxUV).rgb;
     }
 
-    // ── Depth-slice sweep ─────────────────────────────────────────────
+    // Depth-slice sweep
     if (Sweep > 0.5) {
         float sweepPos  = (SweepDir > 0.5) ? (1.0 - Offset) : Offset;
         float sweepHalf = max(Width, 0.005);
-        float sm        = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf,
-                                            abs(sweepDepth - sweepPos));
-        effectMask *= sm;
+        effectMask *= 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf,
+                                        abs(sweepDepth - sweepPos));
     }
 
     fragColor = vec4(mix(bg, effectColor, effectMask), 1.0);
@@ -172,7 +169,7 @@ AIDepthMap::AIDepthMap()
     SetParamInfo(PARAM_NEAR,      "Depth Near",   FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_FAR,       "Depth Far",    FF_TYPE_STANDARD, 1.0f);
     // scan-line toggle
-    SetParamInfo(PARAM_SCANLINE,  "Scan Line",    FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_SCANLINE,  "Scan Line",    FF_TYPE_BOOLEAN,  0.0f);
     // scan-line sub-options
     SetParamInfo(PARAM_EFFECT,    "SL Effect",    FF_TYPE_STANDARD, 0.4f);
     SetParamInfo(PARAM_DENSITY,   "SL Density",   FF_TYPE_STANDARD, 0.3f);
@@ -264,8 +261,20 @@ bool AIDepthMap::loadONNX() {
         m_ortEnv = new Ort::Env(ORT_LOGGING_LEVEL_WARNING, "AIDepth");
 
         Ort::SessionOptions opts;
-        opts.SetIntraOpNumThreads(2);          // ← 2 threads: less CPU contention with Arena
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+        // Try DirectML (GPU) first, fall back to CPU on failure
+#if ORT_DML_AVAILABLE
+        bool dmlOk = false;
+        try {
+            Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_DML(opts, 0));
+            dmlOk = true;
+        } catch (...) {}
+        if (!dmlOk)
+            opts.SetIntraOpNumThreads(2);   // CPU fallback
+#else
+        opts.SetIntraOpNumThreads(2);       // CPU-only build
+#endif
 
         std::wstring modelPath = GetDllDir() + L"depth_anything_v2_vits.onnx";
         m_ortSess = new Ort::Session(*m_ortEnv, modelPath.c_str(), opts);

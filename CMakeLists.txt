@@ -45,10 +45,27 @@ set_target_properties(AIDepthMap PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
 )
 
-# Copy ONNX Runtime DLL to output folder
+# Enable DirectML execution provider if the header is present
+if(EXISTS "${ORT_INC}/dml_provider_factory.h")
+    message(STATUS "DirectML header found – enabling GPU inference")
+    target_compile_definitions(AIDepthMap PRIVATE ORT_DML_AVAILABLE=1)
+else()
+    message(STATUS "DirectML header not found – CPU inference only")
+    target_compile_definitions(AIDepthMap PRIVATE ORT_DML_AVAILABLE=0)
+endif()
+
+# Copy ONNX Runtime DLL(s) to output folder
 add_custom_command(TARGET AIDepthMap POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${ORT_BIND}/onnxruntime.dll"
         "$<TARGET_FILE_DIR:AIDepthMap>"
     COMMENT "Staging onnxruntime.dll"
 )
+if(EXISTS "${ORT_BIND}/DirectML.dll")
+    add_custom_command(TARGET AIDepthMap POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ORT_BIND}/DirectML.dll"
+            "$<TARGET_FILE_DIR:AIDepthMap>"
+        COMMENT "Staging DirectML.dll"
+    )
+endif()
