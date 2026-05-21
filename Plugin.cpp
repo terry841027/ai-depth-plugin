@@ -1,5 +1,8 @@
 #include "Plugin.h"
 #include <Windows.h>
+#if ORT_DML_AVAILABLE
+#include <dml_provider_factory.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstring>

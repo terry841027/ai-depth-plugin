@@ -1,9 +1,9 @@
 #pragma once
 #include <FFGLSDK.h>
 #include <onnxruntime_cxx_api.h>
-// DirectML EP – present only in the DML-enabled ORT NuGet package
+// Detect DirectML EP at compile time – actual include is in Plugin.cpp
+// (must come after <Windows.h> to avoid LPMSG/MSG redefinition errors)
 #if __has_include(<dml_provider_factory.h>)
-#  include <dml_provider_factory.h>
 #  define ORT_DML_AVAILABLE 1
 #else
 #  define ORT_DML_AVAILABLE 0
