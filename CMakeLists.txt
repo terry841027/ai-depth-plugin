@@ -13,13 +13,14 @@ file(GLOB_RECURSE FFGL_SRCS
     "${FFGL_LIB}/ffglex/*.cpp"
 )
 
-# ── ONNX Runtime ─────────────────────────────────────────────────────────────
-set(ORT_DIR  "${CMAKE_SOURCE_DIR}/onnxruntime" CACHE PATH "ONNX Runtime root")
+# ── ONNX Runtime ──────────────────────────────────────────────────────────────
+set(ORT_DIR "${CMAKE_SOURCE_DIR}/onnxruntime" CACHE PATH "ONNX Runtime root")
 set(ORT_INC  "${ORT_DIR}/include")
-set(ORT_LIBD "${ORT_DIR}/lib")
-set(ORT_BIND "${ORT_DIR}/lib")
+set(ORT_LIB  "${ORT_DIR}/lib/onnxruntime.lib")   # import library
+set(ORT_DLL  "${ORT_DIR}/lib/onnxruntime.dll")   # runtime DLL
+set(DML_DLL  "${ORT_DIR}/lib/DirectML.dll")      # DirectML runtime
 
-# ── Plugin DLL ───────────────────────────────────────────────────────────────
+# ── Plugin DLL ────────────────────────────────────────────────────────────────
 add_library(AIDepthMap SHARED
     Plugin.cpp
     Plugin.h
@@ -36,7 +37,7 @@ target_include_directories(AIDepthMap PRIVATE
 target_link_libraries(AIDepthMap PRIVATE
     GLEW::GLEW
     opengl32
-    "${ORT_LIBD}/onnxruntime.lib"
+    "${ORT_LIB}"
 )
 
 set_target_properties(AIDepthMap PROPERTIES
@@ -45,27 +46,25 @@ set_target_properties(AIDepthMap PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
 )
 
-# Enable DirectML execution provider if the header is present
+# ── DirectML detection ────────────────────────────────────────────────────────
 if(EXISTS "${ORT_INC}/dml_provider_factory.h")
-    message(STATUS "DirectML header found – enabling GPU inference")
+    message(STATUS "DirectML header found – GPU inference enabled")
     target_compile_definitions(AIDepthMap PRIVATE ORT_DML_AVAILABLE=1)
 else()
     message(STATUS "DirectML header not found – CPU inference only")
     target_compile_definitions(AIDepthMap PRIVATE ORT_DML_AVAILABLE=0)
 endif()
 
-# Copy ONNX Runtime DLL(s) to output folder
+# ── Stage DLLs next to the plugin ────────────────────────────────────────────
 add_custom_command(TARGET AIDepthMap POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${ORT_BIND}/onnxruntime.dll"
-        "$<TARGET_FILE_DIR:AIDepthMap>"
+        "${ORT_DLL}" "$<TARGET_FILE_DIR:AIDepthMap>"
     COMMENT "Staging onnxruntime.dll"
 )
-if(EXISTS "${ORT_BIND}/DirectML.dll")
+if(EXISTS "${DML_DLL}")
     add_custom_command(TARGET AIDepthMap POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ORT_BIND}/DirectML.dll"
-            "$<TARGET_FILE_DIR:AIDepthMap>"
+            "${DML_DLL}" "$<TARGET_FILE_DIR:AIDepthMap>"
         COMMENT "Staging DirectML.dll"
     )
 endif()
