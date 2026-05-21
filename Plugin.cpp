@@ -1,5 +1,7 @@
 // Windows.h MUST be first — FFGLSDK.h/GLEW would otherwise include it with
 // WIN32_LEAN_AND_MEAN, stripping COM/OLE types (MSG, LPMSG) that DML needs.
+// NOMINMAX prevents Windows from defining min/max macros that break std::min/max.
+#define NOMINMAX
 #include <Windows.h>
 #if ORT_DML_AVAILABLE
 #  include <dml_provider_factory.h>   // safe: COM types already defined above
