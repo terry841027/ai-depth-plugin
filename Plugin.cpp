@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Plugin registration
@@ -10,7 +11,7 @@ static CFFGLPluginInfo PluginInfo(
     PluginFactory< AIDepthMap >,
     "TRAI",
     "AI Depth Map",
-    2, 3,
+    2, 4,
     1, 0,
     FF_EFFECT,
     "Real-time monocular depth map via Depth Anything V2 Small",
@@ -18,7 +19,7 @@ static CFFGLPluginInfo PluginInfo(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Helper: get the directory that contains this DLL
+//  Helper: locate this DLL's directory
 // ─────────────────────────────────────────────────────────────────────────────
 static void* _addrAnchor() { return (void*)_addrAnchor; }
 
@@ -38,7 +39,6 @@ static std::wstring GetDllDir() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Shaders
 // ─────────────────────────────────────────────────────────────────────────────
-// Pass 1: blit + scale input texture into the 518×518 FBO
 static const char* kScaleVert = R"glsl(
 #version 410 core
 uniform vec2 MaxUV;
@@ -56,7 +56,7 @@ out vec4 fragColor;
 void main() { fragColor = texture(InputTexture, vUV); }
 )glsl";
 
-// Pass 2: depth effects (lines / dots / sweep)
+// ── Pass-2: Z-depth map  OR  scan-line effects ─────────────────────────────
 static const char* kVizVert = R"glsl(
 #version 410 core
 layout(location=0) in vec4 vPosition;
@@ -72,56 +72,65 @@ uniform sampler2D VideoTex;   // unit 1 – original input
 uniform vec2  MaxUV;          // HW padding correction for VideoTex
 
 uniform int   Invert;
-uniform float DepthNear;      // C4D-OC style depth range near
-uniform float DepthFar;       // C4D-OC style depth range far
+uniform float DepthNear;      // C4D-OC style depth range low
+uniform float DepthFar;       // C4D-OC style depth range high
+uniform float ScanLine;       // <0.5 = Z-depth mode  >=0.5 = scan-line mode
 
-uniform float Effect;   // 0=h-lines  0.33=warped  0.66=circular  1=dots
-uniform float Density;  // line freq / dot grid
-uniform float Width;    // line thickness / dot radius / sweep band
-uniform float Warp;     // depth displacement (warped-lines)
-uniform float Offset;   // BPM bounce: line scroll or sweep position
-uniform float Sweep;    // >0.5 = depth-slice sweep ON
-uniform float SweepDir; // >0.5 = near→far  else far→near
-uniform float Blend;    // 0=effect on black  1=overlay on original video
+// scan-line sub-uniforms (only used when ScanLine >= 0.5)
+uniform float Effect;    // 0=h-lines  0.33=warped  0.66=circular  1=dots
+uniform float Density;
+uniform float Width;
+uniform float Warp;
+uniform float Offset;
+uniform float Sweep;     // >0.5 = depth-slice sweep ON
+uniform float SweepDir;  // >0.5 = near→far  else far→near
+uniform float Blend;     // 0=effect on black  1=overlay on video
 
 in  vec2 vUV;
 out vec4 fragColor;
 
 void main() {
-    float range  = max(DepthFar - DepthNear, 0.001);
-    vec4  video  = texture(VideoTex, vUV * MaxUV);
-    vec3  bg     = mix(vec3(0.0), video.rgb, Blend);
+    float range = max(DepthFar - DepthNear, 0.001);
+
+    // Flip Y: GL tex row-0=bottom, model row-0=top
+    float d = texture(DepthTex, vec2(vUV.x, 1.0 - vUV.y)).r;
+    if (Invert == 1) d = 1.0 - d;
+    d = clamp((d - DepthNear) / range, 0.0, 1.0);
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Z-DEPTH MODE  (ScanLine < 0.5)
+    // ════════════════════════════════════════════════════════════════════
+    if (ScanLine < 0.5) {
+        fragColor = vec4(d, d, d, 1.0);
+        return;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  SCAN-LINE MODE  (ScanLine >= 0.5)
+    // ════════════════════════════════════════════════════════════════════
+    vec4 video = texture(VideoTex, vUV * MaxUV);
+    vec3 bg    = mix(vec3(0.0), video.rgb, Blend);
 
     float effectMask  = 0.0;
     vec3  effectColor = vec3(1.0);
-    float sweepDepth  = 0.5;   // depth used for the sweep test
+    float sweepDepth  = d;
 
-    // ── Effect modes ──────────────────────────────────────────────────────
     if (Effect < 0.85) {
-        // ── Lines family ──
-        // Flip Y: GL tex row-0=bottom, model row-0=top
-        float d = texture(DepthTex, vec2(vUV.x, 1.0 - vUV.y)).r;
-        if (Invert == 1) d = 1.0 - d;
-        d = clamp((d - DepthNear) / range, 0.0, 1.0);
-        sweepDepth = d;
-
+        // ── Lines family ──────────────────────────────────────────────
         float dens = Density * 50.0 + 2.0;
         float lc;
         if (Effect < 0.33) {
-            // Pure horizontal scan lines
             lc = fract((vUV.y + Offset) * dens);
         } else if (Effect < 0.66) {
-            // Depth-warped horizontal lines
             lc = fract((vUV.y + d * Warp + Offset) * dens);
         } else {
-            // Circular / depth-value contours
             lc = fract((d + Offset) * dens);
         }
         float lineW = max(Width * 0.5, 0.001);
         effectMask  = 1.0 - smoothstep(lineW * 0.7, lineW, min(lc, 1.0 - lc));
 
     } else {
-        // ── LED dot matrix ──
+        // ── LED dot matrix ────────────────────────────────────────────
         float gridN  = Density * 60.0 + 4.0;
         vec2  cell   = floor(vUV * gridN);
         vec2  cellUV = fract(vUV * gridN);
@@ -132,18 +141,18 @@ void main() {
         dc = clamp((dc - DepthNear) / range, 0.0, 1.0);
         sweepDepth = dc;
 
-        float dotR = max(Width * 0.5, 0.02);
+        float dotR  = max(Width * 0.5, 0.02);
         effectMask  = 1.0 - smoothstep(dotR * 0.8, dotR, length(cellUV - 0.5));
         effectColor = texture(VideoTex, ctr * MaxUV).rgb;
     }
 
-    // ── Depth-slice sweep (applied on top of any effect) ──────────────────
+    // ── Depth-slice sweep ─────────────────────────────────────────────
     if (Sweep > 0.5) {
         float sweepPos  = (SweepDir > 0.5) ? (1.0 - Offset) : Offset;
         float sweepHalf = max(Width, 0.005);
-        float sweep     = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf,
+        float sm        = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf,
                                             abs(sweepDepth - sweepPos));
-        effectMask *= sweep;
+        effectMask *= sm;
     }
 
     fragColor = vec4(mix(bg, effectColor, effectMask), 1.0);
@@ -157,22 +166,25 @@ AIDepthMap::AIDepthMap()
 {
     SetMinInputs(1);
     SetMaxInputs(1);
+    // depth-map controls
     SetParamInfo(PARAM_PERF,      "Performance",  FF_TYPE_STANDARD, 0.5f);
-    SetParamInfo(PARAM_EFFECT,    "Effect",       FF_TYPE_STANDARD, 0.4f);
-    SetParamInfo(PARAM_DENSITY,   "Density",      FF_TYPE_STANDARD, 0.3f);
-    SetParamInfo(PARAM_WIDTH,     "Width",        FF_TYPE_STANDARD, 0.1f);
-    SetParamInfo(PARAM_WARP,      "Warp",         FF_TYPE_STANDARD, 0.3f);
-    SetParamInfo(PARAM_OFFSET,    "Offset",       FF_TYPE_STANDARD, 0.0f);
-    SetParamInfo(PARAM_SWEEP,     "Sweep",        FF_TYPE_STANDARD, 0.0f);
-    SetParamInfo(PARAM_SWEEP_DIR, "Sweep Dir",    FF_TYPE_STANDARD, 0.0f);
-    SetParamInfo(PARAM_BLEND,     "Blend Video",  FF_TYPE_STANDARD, 0.5f);
     SetParamInfo(PARAM_INVERT,    "Invert",       FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_NEAR,      "Depth Near",   FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_FAR,       "Depth Far",    FF_TYPE_STANDARD, 1.0f);
+    // scan-line toggle
+    SetParamInfo(PARAM_SCANLINE,  "Scan Line",    FF_TYPE_STANDARD, 0.0f);
+    // scan-line sub-options
+    SetParamInfo(PARAM_EFFECT,    "SL Effect",    FF_TYPE_STANDARD, 0.4f);
+    SetParamInfo(PARAM_DENSITY,   "SL Density",   FF_TYPE_STANDARD, 0.3f);
+    SetParamInfo(PARAM_WIDTH,     "SL Width",     FF_TYPE_STANDARD, 0.1f);
+    SetParamInfo(PARAM_WARP,      "SL Warp",      FF_TYPE_STANDARD, 0.3f);
+    SetParamInfo(PARAM_OFFSET,    "SL Offset",    FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_SWEEP,     "SL Sweep",     FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_SWEEP_DIR, "SL Sweep Dir", FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_BLEND,     "SL Blend Vid", FF_TYPE_STANDARD, 0.5f);
 }
 
 AIDepthMap::~AIDepthMap() {
-    // Stop background worker
     if (m_worker.joinable()) {
         m_workerStop = true;
         m_inCV.notify_all();
@@ -183,7 +195,7 @@ AIDepthMap::~AIDepthMap() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Background inference worker
+//  Background inference worker  (never runs on render thread)
 // ─────────────────────────────────────────────────────────────────────────────
 void AIDepthMap::workerFunc() {
     static const float mean[3] = {0.485f, 0.456f, 0.406f};
@@ -195,7 +207,6 @@ void AIDepthMap::workerFunc() {
     std::vector<float>   localDepth(total);
 
     while (true) {
-        // Wait for a new frame from the render thread
         {
             std::unique_lock<std::mutex> lk(m_inMtx);
             m_inCV.wait(lk, [this] {
@@ -218,7 +229,6 @@ void AIDepthMap::workerFunc() {
             }
         }
 
-        // ONNX inference
         try {
             auto memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
             int64_t shape[] = {1, 3, MODEL_H, MODEL_W};
@@ -233,18 +243,13 @@ void AIDepthMap::workerFunc() {
             float* raw = outputs[0].GetTensorMutableData<float>();
             int    sz  = (int)outputs[0].GetTensorTypeAndShapeInfo().GetElementCount();
 
-            // Per-frame min-max normalise → [0, 1]
             float dMin = *std::min_element(raw, raw + sz);
             float dMax = *std::max_element(raw, raw + sz);
             float rng  = std::max(dMax - dMin, 1e-6f);
             for (int i = 0; i < sz; ++i)
                 localDepth[i] = (raw[i] - dMin) / rng;
 
-            // Publish result
-            {
-                std::lock_guard<std::mutex> lk(m_outMtx);
-                m_depthNew = localDepth;
-            }
+            { std::lock_guard<std::mutex> lk(m_outMtx); m_depthNew = localDepth; }
             m_depthAvail = true;
         }
         catch (...) {}
@@ -259,7 +264,7 @@ bool AIDepthMap::loadONNX() {
         m_ortEnv = new Ort::Env(ORT_LOGGING_LEVEL_WARNING, "AIDepth");
 
         Ort::SessionOptions opts;
-        opts.SetIntraOpNumThreads(4);
+        opts.SetIntraOpNumThreads(2);          // ← 2 threads: less CPU contention with Arena
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
         std::wstring modelPath = GetDllDir() + L"depth_anything_v2_vits.onnx";
@@ -273,20 +278,14 @@ bool AIDepthMap::loadONNX() {
         for (auto& s : m_inNames)  m_inCStr .push_back(s.c_str());
         for (auto& s : m_outNames) m_outCStr.push_back(s.c_str());
 
-        // Pre-allocate CPU buffers
         const int total = MODEL_H * MODEL_W;
-        m_rgba    .resize(total * 4, 0);
         m_rgbaFor .resize(total * 4, 0);
-        m_depthNew.resize(total, 0.5f);  // init to mid-depth
+        m_depthNew.resize(total, 0.5f);
 
-        // Start background worker
         m_worker = std::thread(&AIDepthMap::workerFunc, this);
-
         return true;
     }
-    catch (...) {
-        return false;
-    }
+    catch (...) { return false; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -303,28 +302,38 @@ FFResult AIDepthMap::InitGL(const FFGLViewportStruct* vp) {
     // 518×518 scale FBO (RGBA8)
     glGenTextures(1, &m_scaleTex);
     glBindTexture(GL_TEXTURE_2D, m_scaleTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, MODEL_W, MODEL_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, MODEL_W, MODEL_H, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     glGenFramebuffers(1, &m_scaleFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, m_scaleFBO);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_scaleTex, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, m_scaleTex, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // 518×518 depth texture (R32F) – init to 0.5 so first frame looks neutral
+    // 518×518 depth result texture (R32F), init to 0.5
     std::vector<float> initDepth(MODEL_H * MODEL_W, 0.5f);
     glGenTextures(1, &m_depthTex);
     glBindTexture(GL_TEXTURE_2D, m_depthTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MODEL_W, MODEL_H, 0, GL_RED, GL_FLOAT, initDepth.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, MODEL_W, MODEL_H, 0,
+                 GL_RED, GL_FLOAT, initDepth.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Load ONNX model + start worker thread
-    m_ortOk = loadONNX();
+    // Two PBOs for async pixel readback (GL_STREAM_READ = hint for GPU→CPU copy)
+    const GLsizeiptr pboSize = MODEL_W * MODEL_H * 4;
+    glGenBuffers(2, m_pbo);
+    for (int i = 0; i < 2; ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, pboSize, nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
+    m_ortOk = loadONNX();
     return CFFGLPlugin::InitGL(vp);
 }
 
@@ -335,6 +344,7 @@ FFResult AIDepthMap::DeInitGL() {
     m_scaleShader.FreeGLResources();
     m_vizShader  .FreeGLResources();
     m_quad.Release();
+    if (m_pbo[0]) { glDeleteBuffers(2, m_pbo); m_pbo[0] = m_pbo[1] = 0; }
     if (m_scaleFBO) { glDeleteFramebuffers(1, &m_scaleFBO); m_scaleFBO = 0; }
     if (m_scaleTex) { glDeleteTextures(1,    &m_scaleTex);  m_scaleTex = 0; }
     if (m_depthTex) { glDeleteTextures(1,    &m_depthTex);  m_depthTex = 0; }
@@ -342,7 +352,7 @@ FFResult AIDepthMap::DeInitGL() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  ProcessOpenGL   (render thread – never blocks on inference)
+//  ProcessOpenGL  – render thread, never blocks on ONNX
 // ─────────────────────────────────────────────────────────────────────────────
 FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
     if (!pGL->numInputTextures || !pGL->inputTextures[0]) return FF_FAIL;
@@ -353,7 +363,7 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
     float maxV = tex.HardwareHeight ? (float)tex.Height / tex.HardwareHeight : 1.f;
 
     if (m_ortOk) {
-        // ── Upload new depth if worker just finished ───────────────────────
+        // ── 1. Upload new depth result if worker just finished ─────────────
         if (m_depthAvail.exchange(false)) {
             std::lock_guard<std::mutex> lk(m_outMtx);
             glBindTexture(GL_TEXTURE_2D, m_depthTex);
@@ -362,12 +372,13 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
-        // ── Submit new frame to worker (non-blocking) ─────────────────────
-        int  skip      = (m_perf < 0.33f) ? 4 : (m_perf < 0.66f) ? 2 : 1;
-        bool doSubmit  = ((m_frameCount % skip) == 0) && !m_frameAvail.load();
+        // ── 2. Decide whether to submit this frame ─────────────────────────
+        int  skip     = (m_perf < 0.33f) ? 4 : (m_perf < 0.66f) ? 2 : 1;
+        bool doSubmit = ((m_frameCount % skip) == 0) && !m_frameAvail.load();
+        m_frameCount++;
 
         if (doSubmit) {
-            // Pass 1: scale input → 518×518 FBO
+            // ── Pass 1: scale input → 518×518 FBO ─────────────────────────
             GLint prevFBO = 0;
             glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
 
@@ -382,28 +393,43 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
                 m_quad.Draw();
             }
 
-            // Read 518×518 RGBA – only ~1 MB, fast
-            glReadPixels(0, 0, MODEL_W, MODEL_H, GL_RGBA, GL_UNSIGNED_BYTE, m_rgba.data());
+            // ── Async PBO readback (non-blocking) ─────────────────────────
+            // Start writing this frame's pixels into m_pbo[m_pboWrite]
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[m_pboWrite]);
+            glReadPixels(0, 0, MODEL_W, MODEL_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                         nullptr);  // nullptr = write into bound PBO asynchronously
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            m_pboFilled[m_pboWrite] = true;
 
             glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFBO);
             glViewport(0, 0, m_vpW, m_vpH);
 
-            // Hand RGBA to worker (lock < 1 µs)
-            {
-                std::lock_guard<std::mutex> lk(m_inMtx);
-                m_rgbaFor = m_rgba;
-                m_frameAvail = true;
+            // Map the OTHER PBO (filled last submit) – GPU copy should be done
+            int readIdx = 1 - m_pboWrite;
+            if (m_pboFilled[readIdx]) {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[readIdx]);
+                const uint8_t* ptr =
+                    (const uint8_t*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                if (ptr) {
+                    {
+                        std::lock_guard<std::mutex> lk(m_inMtx);
+                        std::memcpy(m_rgbaFor.data(), ptr, MODEL_W * MODEL_H * 4);
+                        m_frameAvail = true;
+                    }
+                    m_inCV.notify_one();
+                    glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                }
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
             }
-            m_inCV.notify_one();
+
+            m_pboWrite = 1 - m_pboWrite;
         }
-        m_frameCount++;
     }
 
-    // ── Pass 2: depth effect (lines / dots / sweep) ───────────────────────
+    // ── Pass 2: visualise ─────────────────────────────────────────────────
     {
         ffglex::ScopedShaderBinding sb(m_vizShader.GetGLID());
 
-        // Bind depth to unit 0, original video to unit 1
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_depthTex);
         glActiveTexture(GL_TEXTURE1);
@@ -416,6 +442,7 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
         m_vizShader.Set("Invert",    m_invert);
         m_vizShader.Set("DepthNear", m_near);
         m_vizShader.Set("DepthFar",  m_far);
+        m_vizShader.Set("ScanLine",  m_scanLine);
         m_vizShader.Set("Effect",    m_effect);
         m_vizShader.Set("Density",   m_density);
         m_vizShader.Set("Width",     m_width);
@@ -441,6 +468,10 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
 FFResult AIDepthMap::SetFloatParameter(unsigned int idx, float val) {
     switch (idx) {
         case PARAM_PERF:      m_perf     = val;                   break;
+        case PARAM_INVERT:    m_invert   = (val > 0.5f) ? 1 : 0; break;
+        case PARAM_NEAR:      m_near     = val;                   break;
+        case PARAM_FAR:       m_far      = val;                   break;
+        case PARAM_SCANLINE:  m_scanLine = val;                   break;
         case PARAM_EFFECT:    m_effect   = val;                   break;
         case PARAM_DENSITY:   m_density  = val;                   break;
         case PARAM_WIDTH:     m_width    = val;                   break;
@@ -449,9 +480,6 @@ FFResult AIDepthMap::SetFloatParameter(unsigned int idx, float val) {
         case PARAM_SWEEP:     m_sweep    = val;                   break;
         case PARAM_SWEEP_DIR: m_sweepDir = val;                   break;
         case PARAM_BLEND:     m_blend    = val;                   break;
-        case PARAM_INVERT:    m_invert   = (val > 0.5f) ? 1 : 0; break;
-        case PARAM_NEAR:      m_near     = val;                   break;
-        case PARAM_FAR:       m_far      = val;                   break;
         default: return FF_FAIL;
     }
     return FF_SUCCESS;
@@ -460,6 +488,10 @@ FFResult AIDepthMap::SetFloatParameter(unsigned int idx, float val) {
 float AIDepthMap::GetFloatParameter(unsigned int idx) {
     switch (idx) {
         case PARAM_PERF:      return m_perf;
+        case PARAM_INVERT:    return (float)m_invert;
+        case PARAM_NEAR:      return m_near;
+        case PARAM_FAR:       return m_far;
+        case PARAM_SCANLINE:  return m_scanLine;
         case PARAM_EFFECT:    return m_effect;
         case PARAM_DENSITY:   return m_density;
         case PARAM_WIDTH:     return m_width;
@@ -468,9 +500,6 @@ float AIDepthMap::GetFloatParameter(unsigned int idx) {
         case PARAM_SWEEP:     return m_sweep;
         case PARAM_SWEEP_DIR: return m_sweepDir;
         case PARAM_BLEND:     return m_blend;
-        case PARAM_INVERT:    return (float)m_invert;
-        case PARAM_NEAR:      return m_near;
-        case PARAM_FAR:       return m_far;
         default: return 0.f;
     }
 }
