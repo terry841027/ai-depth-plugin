@@ -1,12 +1,14 @@
 #pragma once
 #include <FFGLSDK.h>
 #include <onnxruntime_cxx_api.h>
-// Detect DirectML EP at compile time – actual include is in Plugin.cpp
-// (must come after <Windows.h> to avoid LPMSG/MSG redefinition errors)
-#if __has_include(<dml_provider_factory.h>)
-#  define ORT_DML_AVAILABLE 1
-#else
-#  define ORT_DML_AVAILABLE 0
+// Fallback detection when not set by the build system (CMake always defines it).
+// Actual #include <dml_provider_factory.h> lives in Plugin.cpp, after <Windows.h>.
+#ifndef ORT_DML_AVAILABLE
+#  if __has_include(<dml_provider_factory.h>)
+#    define ORT_DML_AVAILABLE 1
+#  else
+#    define ORT_DML_AVAILABLE 0
+#  endif
 #endif
 #include <vector>
 #include <string>

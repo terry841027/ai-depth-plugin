@@ -1,8 +1,10 @@
-#include "Plugin.h"
+// Windows.h MUST be first — FFGLSDK.h/GLEW would otherwise include it with
+// WIN32_LEAN_AND_MEAN, stripping COM/OLE types (MSG, LPMSG) that DML needs.
 #include <Windows.h>
 #if ORT_DML_AVAILABLE
-#include <dml_provider_factory.h>
+#  include <dml_provider_factory.h>   // safe: COM types already defined above
 #endif
+#include "Plugin.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
