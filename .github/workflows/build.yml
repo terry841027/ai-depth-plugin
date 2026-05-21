@@ -19,19 +19,30 @@ jobs:
 
       - name: Download ONNX Runtime with DirectML (NuGet)
         run: |
-          # NuGet package includes ORT + DirectML EP + dml_provider_factory.h
-          $url = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.20.1/microsoft.ml.onnxruntime.directml.1.20.1.nupkg"
-          Invoke-WebRequest -Uri $url -OutFile "ort-dml.zip"
+          # 1. ORT DirectML package (headers + DML-enabled onnxruntime.dll/.lib)
+          $ortUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.20.1/microsoft.ml.onnxruntime.directml.1.20.1.nupkg"
+          Invoke-WebRequest -Uri $ortUrl -OutFile "ort-dml.zip"
           Expand-Archive -Path "ort-dml.zip" -DestinationPath "ort-dml-pkg" -Force
+
+          # 2. DirectML runtime (separate package – DirectML.dll lives here)
+          $dmlUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg"
+          Invoke-WebRequest -Uri $dmlUrl -OutFile "directml.zip"
+          Expand-Archive -Path "directml.zip" -DestinationPath "directml-pkg" -Force
 
           # Normalise into the layout CMakeLists.txt expects
           New-Item -ItemType Directory -Force "onnxruntime/include"
           New-Item -ItemType Directory -Force "onnxruntime/lib"
-          Copy-Item "ort-dml-pkg/build/native/include/*"                "onnxruntime/include/" -Recurse -Force
-          # .lib lives next to the DLL in runtimes/win-x64/native/
-          Copy-Item "ort-dml-pkg/runtimes/win-x64/native/onnxruntime.lib" "onnxruntime/lib/"
-          Copy-Item "ort-dml-pkg/runtimes/win-x64/native/onnxruntime.dll" "onnxruntime/lib/"
-          Copy-Item "ort-dml-pkg/runtimes/win-x64/native/DirectML.dll"    "onnxruntime/lib/"
+
+          # Headers (dml_provider_factory.h is here)
+          Copy-Item "ort-dml-pkg/build/native/include/*" "onnxruntime/include/" -Recurse -Force
+
+          # Locate files dynamically – package layout varies between versions
+          $lib = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.lib" | Select-Object -First 1).FullName
+          $dll = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1).FullName
+          $dml = (Get-ChildItem "directml-pkg" -Recurse -Filter "DirectML.dll"   | Select-Object -First 1).FullName
+          Copy-Item $lib "onnxruntime/lib/"
+          Copy-Item $dll "onnxruntime/lib/"
+          Copy-Item $dml "onnxruntime/lib/"
 
       - name: Download Depth Anything V2 Small ONNX model
         run: |
