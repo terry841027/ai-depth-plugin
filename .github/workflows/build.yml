@@ -36,10 +36,10 @@ jobs:
           # Headers (dml_provider_factory.h is here)
           Copy-Item "ort-dml-pkg/build/native/include/*" "onnxruntime/include/" -Recurse -Force
 
-          # Locate files dynamically – package layout varies between versions
-          $lib = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.lib" | Select-Object -First 1).FullName
-          $dll = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1).FullName
-          $dml = (Get-ChildItem "directml-pkg" -Recurse -Filter "DirectML.dll"   | Select-Object -First 1).FullName
+          # Locate x64 files – filter by path to avoid picking up ARM64 variants
+          $lib = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.lib" | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
+          $dll = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.dll" | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
+          $dml = (Get-ChildItem "directml-pkg" -Recurse -Filter "DirectML.dll"   | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
           Copy-Item $lib "onnxruntime/lib/"
           Copy-Item $dll "onnxruntime/lib/"
           Copy-Item $dml "onnxruntime/lib/"
