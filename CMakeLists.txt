@@ -17,7 +17,7 @@ file(GLOB_RECURSE FFGL_SRCS
 set(ORT_DIR  "${CMAKE_SOURCE_DIR}/onnxruntime" CACHE PATH "ONNX Runtime root")
 set(ORT_INC  "${ORT_DIR}/include")
 set(ORT_LIBD "${ORT_DIR}/lib")
-set(ORT_BIND "${ORT_DIR}/bin")
+set(ORT_BIND "${ORT_DIR}/lib")
 
 # ── Plugin DLL ───────────────────────────────────────────────────────────────
 add_library(AIDepthMap SHARED
