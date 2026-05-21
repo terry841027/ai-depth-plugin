@@ -27,8 +27,9 @@ jobs:
           # Normalise into the layout CMakeLists.txt expects
           New-Item -ItemType Directory -Force "onnxruntime/include"
           New-Item -ItemType Directory -Force "onnxruntime/lib"
-          Copy-Item "ort-dml-pkg/build/native/include/*"            "onnxruntime/include/" -Recurse -Force
-          Copy-Item "ort-dml-pkg/build/native/lib/x64/onnxruntime.lib" "onnxruntime/lib/"
+          Copy-Item "ort-dml-pkg/build/native/include/*"                "onnxruntime/include/" -Recurse -Force
+          # .lib lives next to the DLL in runtimes/win-x64/native/
+          Copy-Item "ort-dml-pkg/runtimes/win-x64/native/onnxruntime.lib" "onnxruntime/lib/"
           Copy-Item "ort-dml-pkg/runtimes/win-x64/native/onnxruntime.dll" "onnxruntime/lib/"
           Copy-Item "ort-dml-pkg/runtimes/win-x64/native/DirectML.dll"    "onnxruntime/lib/"
 
