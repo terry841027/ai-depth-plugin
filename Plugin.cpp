@@ -193,7 +193,7 @@ AIDepthMap::AIDepthMap()
     SetParamInfo(PARAM_WIDTH,     "SL Width",     FF_TYPE_STANDARD, 0.1f);
     SetParamInfo(PARAM_WARP,      "SL Warp",      FF_TYPE_STANDARD, 0.3f);
     SetParamInfo(PARAM_OFFSET,    "SL Offset",    FF_TYPE_STANDARD, 0.0f);
-    SetParamInfo(PARAM_SWEEP,     "SL Sweep",     FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_SWEEP,     "SL Sweep",     FF_TYPE_BOOLEAN,  0.0f);
     SetParamInfo(PARAM_SWEEP_DIR, "SL Sweep Dir", FF_TYPE_BOOLEAN,  0.0f);
     SetParamInfo(PARAM_BLEND,     "SL Blend Vid", FF_TYPE_STANDARD, 0.5f);
 }
