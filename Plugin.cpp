@@ -106,7 +106,17 @@ void main() {
     if (ScanLine < 0.5) {
         float range = max(DepthFar - DepthNear, 0.001);
         float d = clamp((rawD - DepthNear) / range, 0.0, 1.0);
-        fragColor = vec4(d, d, d, 1.0);
+
+        // Depth-slice sweep overlay (bright band sweeping through Z-depth)
+        if (Sweep > 0.5) {
+            float sweepPos  = (SweepDir > 0.5) ? (1.0 - Offset) : Offset;
+            float sweepHalf = max(Width, 0.005);
+            float band = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(d - sweepPos));
+            float lit  = mix(d, 1.0, band);
+            fragColor = vec4(lit, lit, lit, 1.0);
+        } else {
+            fragColor = vec4(d, d, d, 1.0);
+        }
         return;
     }
 
@@ -172,7 +182,7 @@ AIDepthMap::AIDepthMap()
     SetMaxInputs(1);
     // depth-map controls
     SetParamInfo(PARAM_PERF,      "Performance",  FF_TYPE_STANDARD, 0.5f);
-    SetParamInfo(PARAM_INVERT,    "Invert",       FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_INVERT,    "Invert",       FF_TYPE_BOOLEAN,  0.0f);
     SetParamInfo(PARAM_NEAR,      "Depth Near",   FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_FAR,       "Depth Far",    FF_TYPE_STANDARD, 1.0f);
     // scan-line toggle
@@ -184,7 +194,7 @@ AIDepthMap::AIDepthMap()
     SetParamInfo(PARAM_WARP,      "SL Warp",      FF_TYPE_STANDARD, 0.3f);
     SetParamInfo(PARAM_OFFSET,    "SL Offset",    FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_SWEEP,     "SL Sweep",     FF_TYPE_STANDARD, 0.0f);
-    SetParamInfo(PARAM_SWEEP_DIR, "SL Sweep Dir", FF_TYPE_STANDARD, 0.0f);
+    SetParamInfo(PARAM_SWEEP_DIR, "SL Sweep Dir", FF_TYPE_BOOLEAN,  0.0f);
     SetParamInfo(PARAM_BLEND,     "SL Blend Vid", FF_TYPE_STANDARD, 0.5f);
 }
 
