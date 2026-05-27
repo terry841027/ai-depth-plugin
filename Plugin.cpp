@@ -108,12 +108,16 @@ void main() {
         float range = max(DepthFar - DepthNear, 0.001);
         float d = clamp((rawD - DepthNear) / range, 0.0, 1.0);
 
-        // Depth-slice sweep overlay (bright band sweeping through Z-depth)
+        // Depth-slice sweep overlay (dual-band for seamless BPM loop)
         if (Sweep > 0.5) {
-            float sweepPos  = (SweepDir > 0.5) ? (1.0 - SweepPos) : SweepPos;
+            float sp       = fract(SweepPos);
+            float pos1     = (SweepDir > 0.5) ? (1.0 - sp) : sp;
+            float pos2     = pos1 - 1.0;
             float sweepHalf = max(Width, 0.005);
-            float band = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(d - sweepPos));
-            float lit  = mix(d, 1.0, band);
+            float band1 = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(d - pos1));
+            float band2 = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(d - pos2));
+            float band  = max(band1, band2);
+            float lit   = mix(d, 1.0, band);
             fragColor = vec4(lit, lit, lit, 1.0);
         } else {
             fragColor = vec4(d, d, d, 1.0);
@@ -137,11 +141,11 @@ void main() {
         float dens = Density * 50.0 + 2.0;
         float lc;
         if (Effect < 0.33) {
-            lc = fract((vUV.y + Offset) * dens);
+            lc = fract(vUV.y * dens + Offset);
         } else if (Effect < 0.66) {
-            lc = fract((vUV.y + d * Warp + Offset) * dens);
+            lc = fract(vUV.y * dens + d * Warp * dens + Offset);
         } else {
-            lc = fract((d + Offset) * dens);
+            lc = fract(d * dens + Offset);
         }
         float lineW = max(Width * 0.5, 0.001);
         effectMask  = 1.0 - smoothstep(lineW * 0.7, lineW, min(lc, 1.0 - lc));
@@ -162,12 +166,15 @@ void main() {
         effectColor = texture(VideoTex, ctr * MaxUV).rgb;
     }
 
-    // Depth-slice sweep
+    // Depth-slice sweep (dual-band for seamless BPM loop)
     if (Sweep > 0.5) {
-        float sweepPos  = (SweepDir > 0.5) ? (1.0 - SweepPos) : SweepPos;
+        float sp       = fract(SweepPos);
+        float pos1     = (SweepDir > 0.5) ? (1.0 - sp) : sp;
+        float pos2     = pos1 - 1.0;   // wrapped copy
         float sweepHalf = max(Width, 0.005);
-        effectMask *= 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf,
-                                        abs(sweepDepth - sweepPos));
+        float band1 = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(sweepDepth - pos1));
+        float band2 = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(sweepDepth - pos2));
+        effectMask *= 1.0 - max(band1, band2);
     }
 
     fragColor = vec4(mix(bg, effectColor, effectMask), 1.0);
