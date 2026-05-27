@@ -87,9 +87,10 @@ uniform float Effect;    // 0=h-lines  0.33=warped  0.66=circular  1=dots
 uniform float Density;
 uniform float Width;
 uniform float Warp;
-uniform float Offset;    // BPM bounce
+uniform float Offset;    // SL scroll position (BPM)
 uniform float Sweep;     // >0.5 = depth-slice sweep ON
 uniform float SweepDir;  // >0.5 = near→far  else far→near
+uniform float SweepPos;  // sweep slice position 0-1 (BPM)
 uniform float Blend;     // 0=lines on black  1=overlay on video
 
 in  vec2 vUV;
@@ -109,7 +110,7 @@ void main() {
 
         // Depth-slice sweep overlay (bright band sweeping through Z-depth)
         if (Sweep > 0.5) {
-            float sweepPos  = (SweepDir > 0.5) ? (1.0 - Offset) : Offset;
+            float sweepPos  = (SweepDir > 0.5) ? (1.0 - SweepPos) : SweepPos;
             float sweepHalf = max(Width, 0.005);
             float band = 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf, abs(d - sweepPos));
             float lit  = mix(d, 1.0, band);
@@ -163,7 +164,7 @@ void main() {
 
     // Depth-slice sweep
     if (Sweep > 0.5) {
-        float sweepPos  = (SweepDir > 0.5) ? (1.0 - Offset) : Offset;
+        float sweepPos  = (SweepDir > 0.5) ? (1.0 - SweepPos) : SweepPos;
         float sweepHalf = max(Width, 0.005);
         effectMask *= 1.0 - smoothstep(sweepHalf * 0.6, sweepHalf,
                                         abs(sweepDepth - sweepPos));
@@ -180,21 +181,24 @@ AIDepthMap::AIDepthMap()
 {
     SetMinInputs(1);
     SetMaxInputs(1);
-    // depth-map controls
-    SetParamInfo(PARAM_PERF,      "Performance",  FF_TYPE_STANDARD, 0.5f);
+    // ── Inference controls ────────────────────────────────
+    SetParamInfo(PARAM_QUALITY,   "Quality",      FF_TYPE_STANDARD, 0.5f);
+    SetParamInfo(PARAM_SMOOTH,    "Smooth",       FF_TYPE_STANDARD, 0.35f);
+    // ── Z-depth controls ──────────────────────────────────
     SetParamInfo(PARAM_INVERT,    "Invert",       FF_TYPE_BOOLEAN,  0.0f);
     SetParamInfo(PARAM_NEAR,      "Depth Near",   FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_FAR,       "Depth Far",    FF_TYPE_STANDARD, 1.0f);
-    // scan-line toggle
+    // ── Sweep (global: works in Z-depth and SL mode) ──────
+    SetParamInfo(PARAM_SWEEP,     "Sweep",        FF_TYPE_BOOLEAN,  0.0f);
+    SetParamInfo(PARAM_SWEEP_DIR, "Sweep Dir",    FF_TYPE_BOOLEAN,  0.0f);
+    SetParamInfo(PARAM_SWEEP_POS, "Sweep Pos",    FF_TYPE_STANDARD, 0.0f);
+    // ── Scan-line mode ────────────────────────────────────
     SetParamInfo(PARAM_SCANLINE,  "Scan Line",    FF_TYPE_BOOLEAN,  0.0f);
-    // scan-line sub-options
     SetParamInfo(PARAM_EFFECT,    "SL Effect",    FF_TYPE_STANDARD, 0.4f);
     SetParamInfo(PARAM_DENSITY,   "SL Density",   FF_TYPE_STANDARD, 0.3f);
     SetParamInfo(PARAM_WIDTH,     "SL Width",     FF_TYPE_STANDARD, 0.1f);
     SetParamInfo(PARAM_WARP,      "SL Warp",      FF_TYPE_STANDARD, 0.3f);
     SetParamInfo(PARAM_OFFSET,    "SL Offset",    FF_TYPE_STANDARD, 0.0f);
-    SetParamInfo(PARAM_SWEEP,     "SL Sweep",     FF_TYPE_BOOLEAN,  0.0f);
-    SetParamInfo(PARAM_SWEEP_DIR, "SL Sweep Dir", FF_TYPE_BOOLEAN,  0.0f);
     SetParamInfo(PARAM_BLEND,     "SL Blend Vid", FF_TYPE_STANDARD, 0.5f);
 }
 
@@ -305,8 +309,9 @@ bool AIDepthMap::loadONNX() {
         for (auto& s : m_outNames) m_outCStr.push_back(s.c_str());
 
         const int total = MODEL_H * MODEL_W;
-        m_rgbaFor .resize(total * 4, 0);
-        m_depthNew.resize(total, 0.5f);
+        m_rgbaFor    .resize(total * 4, 0);
+        m_depthNew   .resize(total, 0.5f);
+        m_depthSmooth.resize(total, 0.5f);
 
         m_worker = std::thread(&AIDepthMap::workerFunc, this);
         return true;
@@ -392,14 +397,18 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
         // ── 1. Upload new depth result if worker just finished ─────────────
         if (m_depthAvail.exchange(false)) {
             std::lock_guard<std::mutex> lk(m_outMtx);
+            // Temporal smoothing: EMA between previous and new depth map
+            const float alpha = std::max(0.01f, std::min(1.0f, m_smooth));
+            for (int i = 0; i < (int)m_depthSmooth.size(); ++i)
+                m_depthSmooth[i] = m_depthSmooth[i] * (1.0f - alpha) + m_depthNew[i] * alpha;
             glBindTexture(GL_TEXTURE_2D, m_depthTex);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, MODEL_W, MODEL_H,
-                            GL_RED, GL_FLOAT, m_depthNew.data());
+                            GL_RED, GL_FLOAT, m_depthSmooth.data());
             glBindTexture(GL_TEXTURE_2D, 0);
         }
 
         // ── 2. Decide whether to submit this frame ─────────────────────────
-        int  skip     = (m_perf < 0.33f) ? 4 : (m_perf < 0.66f) ? 2 : 1;
+        int  skip     = (m_quality < 0.33f) ? 4 : (m_quality < 0.66f) ? 2 : 1;
         bool doSubmit = ((m_frameCount % skip) == 0) && !m_frameAvail.load();
         m_frameCount++;
 
@@ -476,6 +485,7 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
         m_vizShader.Set("Offset",    m_offset);
         m_vizShader.Set("Sweep",     m_sweep);
         m_vizShader.Set("SweepDir",  m_sweepDir);
+        m_vizShader.Set("SweepPos",  m_sweepPos);
         m_vizShader.Set("Blend",     m_blend);
         m_quad.Draw();
 
@@ -493,18 +503,20 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
 // ─────────────────────────────────────────────────────────────────────────────
 FFResult AIDepthMap::SetFloatParameter(unsigned int idx, float val) {
     switch (idx) {
-        case PARAM_PERF:      m_perf     = val;                   break;
+        case PARAM_QUALITY:   m_quality  = val;                   break;
+        case PARAM_SMOOTH:    m_smooth   = val;                   break;
         case PARAM_INVERT:    m_invert   = (val > 0.5f) ? 1 : 0; break;
         case PARAM_NEAR:      m_near     = val;                   break;
         case PARAM_FAR:       m_far      = val;                   break;
+        case PARAM_SWEEP:     m_sweep    = val;                   break;
+        case PARAM_SWEEP_DIR: m_sweepDir = val;                   break;
+        case PARAM_SWEEP_POS: m_sweepPos = val;                   break;
         case PARAM_SCANLINE:  m_scanLine = val;                   break;
         case PARAM_EFFECT:    m_effect   = val;                   break;
         case PARAM_DENSITY:   m_density  = val;                   break;
         case PARAM_WIDTH:     m_width    = val;                   break;
         case PARAM_WARP:      m_warp     = val;                   break;
         case PARAM_OFFSET:    m_offset   = val;                   break;
-        case PARAM_SWEEP:     m_sweep    = val;                   break;
-        case PARAM_SWEEP_DIR: m_sweepDir = val;                   break;
         case PARAM_BLEND:     m_blend    = val;                   break;
         default: return FF_FAIL;
     }
@@ -513,18 +525,20 @@ FFResult AIDepthMap::SetFloatParameter(unsigned int idx, float val) {
 
 float AIDepthMap::GetFloatParameter(unsigned int idx) {
     switch (idx) {
-        case PARAM_PERF:      return m_perf;
+        case PARAM_QUALITY:   return m_quality;
+        case PARAM_SMOOTH:    return m_smooth;
         case PARAM_INVERT:    return (float)m_invert;
         case PARAM_NEAR:      return m_near;
         case PARAM_FAR:       return m_far;
+        case PARAM_SWEEP:     return m_sweep;
+        case PARAM_SWEEP_DIR: return m_sweepDir;
+        case PARAM_SWEEP_POS: return m_sweepPos;
         case PARAM_SCANLINE:  return m_scanLine;
         case PARAM_EFFECT:    return m_effect;
         case PARAM_DENSITY:   return m_density;
         case PARAM_WIDTH:     return m_width;
         case PARAM_WARP:      return m_warp;
         case PARAM_OFFSET:    return m_offset;
-        case PARAM_SWEEP:     return m_sweep;
-        case PARAM_SWEEP_DIR: return m_sweepDir;
         case PARAM_BLEND:     return m_blend;
         default: return 0.f;
     }
