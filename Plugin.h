@@ -37,6 +37,12 @@ enum ParamIndex {
     PARAM_WARP,           // depth displacement (warped-lines only)
     PARAM_OFFSET,         // SL scroll position — connect BPM
     PARAM_BLEND,          // 0=effect on black  1=overlay on original video
+    // ── Particle mode ──────────────────────────────────────────────────────────
+    PARAM_PARTICLE,       // 0=off  1=particle-glow mode
+    PARAM_P_DENSITY,      // grid density (more cells = finer particles)
+    PARAM_P_SIZE,         // particle radius
+    PARAM_P_GLOW,         // glow brightness
+    PARAM_P_DRIFT,        // drift animation amount+speed
     PARAM_COUNT
 };
 
@@ -104,6 +110,12 @@ private:
     float m_warp     = 0.3f;
     float m_offset   = 0.0f;
     float m_blend    = 0.5f;
+    float m_particle  = 0.0f;
+    float m_pDensity  = 0.5f;
+    float m_pSize     = 0.5f;
+    float m_pGlow     = 0.7f;
+    float m_pDrift    = 0.3f;
+    float m_time      = 0.0f;   // accumulated seconds (frame-count / 60)
 
     static constexpr int MODEL_H = 518;
     static constexpr int MODEL_W = 518;

@@ -93,13 +93,78 @@ uniform float SweepDir;  // >0.5 = near→far  else far→near
 uniform float SweepPos;  // sweep slice position 0-1 (BPM)
 uniform float Blend;     // 0=lines on black  1=overlay on video
 
+uniform float ParticleMode;
+uniform float ParticleDensity;
+uniform float ParticleSize;
+uniform float ParticleGlow;
+uniform float ParticleDrift;
+uniform float Time;
+uniform float Aspect;
+
 in  vec2 vUV;
 out vec4 fragColor;
+
+vec2 hash2(vec2 p) {
+    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+    return fract(sin(p) * 43758.5453123);
+}
 
 void main() {
     // Raw depth sample – flip Y (GL tex row-0=bottom, model row-0=top)
     float rawD = texture(DepthTex, vec2(vUV.x, 1.0 - vUV.y)).r;
     if (Invert == 1) rawD = 1.0 - rawD;
+
+    // ════════════════════════════════════════════════════════════════════
+    //  PARTICLE GLOW MODE
+    // ════════════════════════════════════════════════════════════════════
+    if (ParticleMode > 0.5) {
+        vec2 uv = vUV;
+        float N     = ParticleDensity * 160.0 + 20.0;
+        float pR    = ParticleSize    * 0.5   + 0.08;
+        float glow  = ParticleGlow    * 10.0  + 1.0;
+        float drift = ParticleDrift   * 0.4;
+        float speed = ParticleDrift   * 2.0   + 0.02;
+        float thresh = 0.08;
+
+        vec2 cellF  = uv * N;
+        vec2 cell   = floor(cellF);
+        vec2 cellUV = fract(cellF);
+        vec2 ctr    = (cell + 0.5) / N;
+
+        float s  = 1.5 / N;
+        float d  = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
+        float dR = texture(DepthTex, vec2(clamp(ctr.x + s, 0.001, 0.999), 1.0 - ctr.y)).r;
+        float dL = texture(DepthTex, vec2(clamp(ctr.x - s, 0.001, 0.999), 1.0 - ctr.y)).r;
+        float dU = texture(DepthTex, vec2(ctr.x, 1.0 - clamp(ctr.y + s, 0.001, 0.999))).r;
+        float dD = texture(DepthTex, vec2(ctr.x, 1.0 - clamp(ctr.y - s, 0.001, 0.999))).r;
+        if (Invert == 1) d = 1.0 - d;
+
+        float edge     = length(vec2(dR - dL, dU - dD)) * 4.0;
+        float edgeMask = smoothstep(thresh * 0.4, thresh, edge);
+
+        vec2  rnd  = hash2(cell);
+        float t    = Time * speed;
+        vec2  dOff = drift * vec2(
+            sin(t * 1.13 + rnd.x * 6.2832),
+            cos(t * 0.87 + rnd.y * 6.2832)
+        );
+        vec2 pCenter = clamp(vec2(0.5) + dOff * 0.5, 0.05, 0.95);
+
+        vec2  delta = cellUV - pCenter;
+        delta.x    *= Aspect;
+        float dist  = length(delta) * N;
+
+        float core     = 1.0 - smoothstep(pR * 0.35, pR * 0.75, dist);
+        float glowFall = exp(-dist * dist / max(pR * pR * 0.3, 0.001));
+        float brightness = (core + glowFall * glow) * edgeMask;
+
+        vec3 nearCol = vec3(1.0, 0.3, 0.8);
+        vec3 farCol  = vec3(0.3, 0.1, 1.0);
+        vec3 col = mix(nearCol, farCol, d);
+
+        fragColor = vec4(col * brightness, brightness);
+        return;
+    }
 
     // ════════════════════════════════════════════════════════════════════
     //  Z-DEPTH MODE  –  Near/Far remapping applies HERE ONLY
@@ -207,6 +272,12 @@ AIDepthMap::AIDepthMap()
     SetParamInfo(PARAM_WARP,      "SL Warp",      FF_TYPE_STANDARD, 0.3f);
     SetParamInfo(PARAM_OFFSET,    "SL Offset",    FF_TYPE_STANDARD, 0.0f);
     SetParamInfo(PARAM_BLEND,     "SL Blend Vid", FF_TYPE_STANDARD, 0.5f);
+    // ── Particle mode ─────────────────────────────────────────────────
+    SetParamInfo(PARAM_PARTICLE,  "Particle",     FF_TYPE_BOOLEAN,  0.0f);
+    SetParamInfo(PARAM_P_DENSITY, "P Density",    FF_TYPE_STANDARD, 0.5f);
+    SetParamInfo(PARAM_P_SIZE,    "P Size",       FF_TYPE_STANDARD, 0.5f);
+    SetParamInfo(PARAM_P_GLOW,    "P Glow",       FF_TYPE_STANDARD, 0.7f);
+    SetParamInfo(PARAM_P_DRIFT,   "P Drift",      FF_TYPE_STANDARD, 0.3f);
 }
 
 AIDepthMap::~AIDepthMap() {
@@ -494,6 +565,14 @@ FFResult AIDepthMap::ProcessOpenGL(ProcessOpenGLStruct* pGL) {
         m_vizShader.Set("SweepDir",  m_sweepDir);
         m_vizShader.Set("SweepPos",  m_sweepPos);
         m_vizShader.Set("Blend",     m_blend);
+        m_time += 1.0f / 60.0f;
+        m_vizShader.Set("ParticleMode",    m_particle);
+        m_vizShader.Set("ParticleDensity", m_pDensity);
+        m_vizShader.Set("ParticleSize",    m_pSize);
+        m_vizShader.Set("ParticleGlow",    m_pGlow);
+        m_vizShader.Set("ParticleDrift",   m_pDrift);
+        m_vizShader.Set("Time",            m_time);
+        m_vizShader.Set("Aspect",          (float)m_vpW / (float)m_vpH);
         m_quad.Draw();
 
         glActiveTexture(GL_TEXTURE1);
@@ -525,6 +604,11 @@ FFResult AIDepthMap::SetFloatParameter(unsigned int idx, float val) {
         case PARAM_WARP:      m_warp     = val;                   break;
         case PARAM_OFFSET:    m_offset   = val;                   break;
         case PARAM_BLEND:     m_blend    = val;                   break;
+        case PARAM_PARTICLE:  m_particle = val;                   break;
+        case PARAM_P_DENSITY: m_pDensity = val;                   break;
+        case PARAM_P_SIZE:    m_pSize    = val;                   break;
+        case PARAM_P_GLOW:    m_pGlow    = val;                   break;
+        case PARAM_P_DRIFT:   m_pDrift   = val;                   break;
         default: return FF_FAIL;
     }
     return FF_SUCCESS;
@@ -547,6 +631,11 @@ float AIDepthMap::GetFloatParameter(unsigned int idx) {
         case PARAM_WARP:      return m_warp;
         case PARAM_OFFSET:    return m_offset;
         case PARAM_BLEND:     return m_blend;
+        case PARAM_PARTICLE:  return m_particle;
+        case PARAM_P_DENSITY: return m_pDensity;
+        case PARAM_P_SIZE:    return m_pSize;
+        case PARAM_P_GLOW:    return m_pGlow;
+        case PARAM_P_DRIFT:   return m_pDrift;
         default: return 0.f;
     }
 }
