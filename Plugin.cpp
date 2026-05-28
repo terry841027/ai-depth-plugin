@@ -118,17 +118,44 @@ void main() {
     //  PARTICLE GLOW MODE
     // ════════════════════════════════════════════════════════════════════
     if (ParticleMode > 0.5) {
-        // ── DEBUG: red=edge strength, green=depth value ──
-        float d = texture(DepthTex, vec2(vUV.x, 1.0 - vUV.y)).r;
+        vec2 uv = vUV;
+        // N = grid cells across screen (fewer = bigger particles)
+        float N     = ParticleDensity * 80.0 + 10.0;  // 10 – 90 cells
+        float pR    = ParticleSize    * 0.4  + 0.1;   // cell-UV radius 0.1–0.5
+        float glow  = ParticleGlow    * 8.0  + 2.0;
+        float drift = ParticleDrift   * 0.4;
+        float speed = ParticleDrift   * 2.0  + 0.02;
+
+        vec2 cellF  = uv * N;
+        vec2 cell   = floor(cellF);
+        vec2 cellUV = fract(cellF);
+        vec2 ctr    = (cell + 0.5) / N;
+
+        float d = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
         if (Invert == 1) d = 1.0 - d;
-        float s  = 0.005;
-        float dR = texture(DepthTex, vec2(clamp(vUV.x+s,0.001,0.999), 1.0-vUV.y)).r;
-        float dL = texture(DepthTex, vec2(clamp(vUV.x-s,0.001,0.999), 1.0-vUV.y)).r;
-        float dU = texture(DepthTex, vec2(vUV.x, 1.0-clamp(vUV.y+s,0.001,0.999))).r;
-        float dD = texture(DepthTex, vec2(vUV.x, 1.0-clamp(vUV.y-s,0.001,0.999))).r;
-        float edge = length(vec2(dR - dL, dU - dD)) * 4.0;
-        // Red = edge*5 (amplified), Green = depth, Blue = 0
-        fragColor = vec4(clamp(edge * 5.0, 0.0, 1.0), d, 0.0, 1.0);
+
+        vec2  rnd  = hash2(cell);
+        float t    = Time * speed;
+        vec2  dOff = drift * vec2(
+            sin(t * 1.13 + rnd.x * 6.2832),
+            cos(t * 0.87 + rnd.y * 6.2832)
+        );
+        vec2 pCenter = clamp(vec2(0.5) + dOff * 0.5, 0.05, 0.95);
+
+        vec2 delta = cellUV - pCenter;
+        delta.x   *= Aspect;         // aspect-correct so particles are circular
+        float dist = length(delta);  // FIX: no * N — pR lives in cell-UV space
+
+        float core     = 1.0 - smoothstep(pR * 0.4, pR, dist);
+        float glowFall = exp(-dist * dist / max(pR * pR * 0.5, 0.001));
+        // depth-modulated presence: near objects = bright, far = dim
+        float brightness = (core + glowFall * glow) * d;
+
+        vec3 nearCol = vec3(1.0, 0.3, 0.8);
+        vec3 farCol  = vec3(0.3, 0.1, 1.0);
+        vec3 col = mix(nearCol, farCol, d);
+
+        fragColor = vec4(col * brightness, 1.0);  // solid alpha
         return;
     }
 
