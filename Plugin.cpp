@@ -119,12 +119,12 @@ void main() {
     // ════════════════════════════════════════════════════════════════════
     if (ParticleMode > 0.5) {
         vec2 uv = vUV;
-        float N     = ParticleDensity * 160.0 + 20.0;
+        float N     = ParticleDensity * 240.0 + 30.0;
         float pR    = ParticleSize    * 0.5   + 0.08;
         float glow  = ParticleGlow    * 10.0  + 1.0;
         float drift = ParticleDrift   * 0.4;
         float speed = ParticleDrift   * 2.0   + 0.02;
-        float thresh = 0.08;
+        float thresh = 0.06 / (ParticleDensity * 5.0 + 1.0);
 
         vec2 cellF  = uv * N;
         vec2 cell   = floor(cellF);
