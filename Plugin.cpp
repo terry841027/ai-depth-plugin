@@ -119,21 +119,33 @@ void main() {
     // ════════════════════════════════════════════════════════════════════
     if (ParticleMode > 0.5) {
         vec2 uv = vUV;
-        // N = grid cells across screen (fewer = bigger particles)
-        float N     = ParticleDensity * 80.0 + 10.0;  // 10 – 90 cells
-        float pR    = ParticleSize    * 0.4  + 0.1;   // cell-UV radius 0.1–0.5
-        float glow  = ParticleGlow    * 8.0  + 2.0;
-        float drift = ParticleDrift   * 0.4;
-        float speed = ParticleDrift   * 2.0  + 0.02;
+        float N     = ParticleDensity * 80.0 + 10.0;  // 10–90 cells
+        float glow  = ParticleGlow   * 8.0  + 2.0;
+        float drift = ParticleDrift  * 0.4;
+        float speed = ParticleDrift  * 2.0  + 0.02;
 
         vec2 cellF  = uv * N;
         vec2 cell   = floor(cellF);
         vec2 cellUV = fract(cellF);
         vec2 ctr    = (cell + 0.5) / N;
 
+        // ── Depth at cell centre ──────────────────────────────────────────
         float d = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
         if (Invert == 1) d = 1.0 - d;
 
+        // ── Silhouette edge detection (neighbour cells, ±2 steps) ─────────
+        float step = 2.0 / N;
+        float dR = texture(DepthTex, vec2(clamp(ctr.x+step,0.001,0.999), 1.0-ctr.y)).r;
+        float dL = texture(DepthTex, vec2(clamp(ctr.x-step,0.001,0.999), 1.0-ctr.y)).r;
+        float dU = texture(DepthTex, vec2(ctr.x, 1.0-clamp(ctr.y+step,0.001,0.999))).r;
+        float dD = texture(DepthTex, vec2(ctr.x, 1.0-clamp(ctr.y-step,0.001,0.999))).r;
+        float edge     = length(vec2(dR - dL, dU - dD));
+        float edgeMask = smoothstep(0.15, 0.45, edge);
+
+        // ── Particle size: near = big, far = small ─────────────────────────
+        float pR = ParticleSize * (0.15 + d * 0.85);  // 0.15×size (far) → 1.0×size (near)
+
+        // ── Drift animation ───────────────────────────────────────────────
         vec2  rnd  = hash2(cell);
         float t    = Time * speed;
         vec2  dOff = drift * vec2(
@@ -142,20 +154,19 @@ void main() {
         );
         vec2 pCenter = clamp(vec2(0.5) + dOff * 0.5, 0.05, 0.95);
 
-        vec2 delta = cellUV - pCenter;
-        delta.x   *= Aspect;         // aspect-correct so particles are circular
-        float dist = length(delta);  // FIX: no * N — pR lives in cell-UV space
+        vec2  delta = cellUV - pCenter;
+        delta.x    *= Aspect;
+        float dist  = length(delta);  // cell-UV space, no * N
 
         float core     = 1.0 - smoothstep(pR * 0.4, pR, dist);
         float glowFall = exp(-dist * dist / max(pR * pR * 0.5, 0.001));
-        // depth-modulated presence: near objects = bright, far = dim
-        float brightness = (core + glowFall * glow) * d;
+        float brightness = (core + glowFall * glow) * edgeMask;
 
-        vec3 nearCol = vec3(1.0, 0.3, 0.8);
-        vec3 farCol  = vec3(0.3, 0.1, 1.0);
-        vec3 col = mix(nearCol, farCol, d);
+        vec3 nearCol = vec3(1.0, 0.3, 0.8);   // pink  = near
+        vec3 farCol  = vec3(0.3, 0.1, 1.0);   // purple = far
+        vec3 col = mix(farCol, nearCol, d);
 
-        fragColor = vec4(col * brightness, 1.0);  // solid alpha
+        fragColor = vec4(col * brightness, 1.0);
         return;
     }
 
