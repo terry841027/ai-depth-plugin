@@ -119,12 +119,11 @@ void main() {
     // ════════════════════════════════════════════════════════════════════
     if (ParticleMode > 0.5) {
         vec2 uv = vUV;
-        float N     = ParticleDensity * 100.0 + 20.0;  // 20–120 cells
-        float glow  = ParticleGlow  * 8.0  + 2.0;
-        float drift = ParticleDrift * 0.35;
-        float speed = ParticleDrift * 1.5  + 0.05;
-        // DepthNear slider = depth threshold: particles only appear where depth > this
-        float thresh = DepthNear;
+        float N      = ParticleDensity * 80.0 + 15.0;   // 15–95 cells
+        float glow   = ParticleGlow  * 8.0 + 2.0;
+        float speed  = ParticleDrift * 1.5 + 0.05;
+        float maxDisp = ParticleDrift * 1.2 + 0.2;      // max outward drift (cell units)
+        float thresh = DepthNear;                         // depth cutoff (set ~0.3 for person only)
 
         vec2 cellF = uv * N;
         vec2 cell  = floor(cellF);
@@ -133,7 +132,7 @@ void main() {
         float wDepth = 0.0;
         float wTotal = 0.0;
 
-        // ── 3×3 neighbour lookup: breaks grid, allows glow to spill ────────
+        // 3×3 neighbourhood: covers particles that have drifted ≤1 cell outward
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 vec2 nc  = cell + vec2(float(dx), float(dy));
@@ -141,27 +140,44 @@ void main() {
 
                 float d = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
                 if (Invert == 1) d = 1.0 - d;
-                if (d < thresh) continue;   // skip background cells
+                if (d < thresh) continue;
 
-                // Fully random particle position in [0,1]×[0,1] within cell
+                // ── Silhouette edge detection for this cell ────────────────
+                float cs = 1.5 / N;
+                float dRc = texture(DepthTex, vec2(clamp(ctr.x+cs,0.001,0.999), 1.0-ctr.y)).r;
+                float dLc = texture(DepthTex, vec2(clamp(ctr.x-cs,0.001,0.999), 1.0-ctr.y)).r;
+                float dUc = texture(DepthTex, vec2(ctr.x, 1.0-clamp(ctr.y+cs,0.001,0.999))).r;
+                float dDc = texture(DepthTex, vec2(ctr.x, 1.0-clamp(ctr.y-cs,0.001,0.999))).r;
+                float edge     = length(vec2(dRc - dLc, dUc - dDc));
+                float edgeMask = smoothstep(0.1, 0.35, edge);
+                // Non-edge cells: skip (we only emit from outline)
+                if (edgeMask < 0.05) continue;
+
+                // ── Outward direction (toward background / lower depth) ────
+                vec2 outDir = normalize(vec2(dLc - dRc, dDc - dUc) + 0.0001);
+
+                // ── Continuous outward stream (phase 0→1, respawns) ───────
                 vec2 rnd = hash2(nc);
-                float t  = Time * speed;
-                vec2 pPos = rnd + drift * vec2(
-                    sin(t * 1.13 + rnd.x * 6.2832),
-                    cos(t * 0.87 + rnd.y * 6.2832)
-                );
+                float phase = fract(Time * speed + rnd.x * 7.3 + rnd.y * 2.9);
+                float disperse = phase * maxDisp;          // 0 = at edge, 1 = far away
+                float fadeOut  = (1.0 - phase) * (1.0 - phase);  // quadratic fade
 
-                // Current pixel position in this neighbour's cell space
+                // Particle position: outward drift + perpendicular spread
+                vec2 perp = vec2(-outDir.y, outDir.x);
+                vec2 pPos = vec2(0.5)
+                          + outDir * disperse
+                          + perp   * (rnd.y - 0.5) * 0.5;  // spread along outline
+
                 vec2 pixPos = cellF - nc;
                 vec2 delta  = pixPos - pPos;
                 delta.x    *= Aspect;
                 float dist  = length(delta);
 
-                // Near = big, Far = small  (5× size range)
-                float pR       = ParticleSize * (0.08 + d * 0.42);
+                // Near = big, Far = small; also shrinks as it disperses
+                float pR       = ParticleSize * (0.08 + d * 0.42) * (0.4 + fadeOut * 0.6);
                 float core     = 1.0 - smoothstep(pR * 0.3, pR, dist);
-                float glowRing = exp(-dist * dist / max(pR * pR * 0.6, 0.001));
-                float b        = core + glowRing * glow;
+                float glowRing = exp(-dist * dist / max(pR * pR * 0.5, 0.001));
+                float b        = (core + glowRing * glow) * edgeMask * fadeOut;
 
                 bright += b;
                 wDepth += d * b;
@@ -173,7 +189,7 @@ void main() {
         vec3 nearCol = vec3(1.0, 0.3, 0.8);
         vec3 farCol  = vec3(0.3, 0.1, 1.0);
         vec3 col     = mix(farCol, nearCol, avgD);
-        fragColor    = vec4(col * min(bright, 2.5), 1.0);
+        fragColor    = vec4(col * min(bright, 3.0), 1.0);
         return;
     }
 
