@@ -119,54 +119,61 @@ void main() {
     // ════════════════════════════════════════════════════════════════════
     if (ParticleMode > 0.5) {
         vec2 uv = vUV;
-        float N     = ParticleDensity * 80.0 + 10.0;  // 10–90 cells
-        float glow  = ParticleGlow   * 8.0  + 2.0;
-        float drift = ParticleDrift  * 0.4;
-        float speed = ParticleDrift  * 2.0  + 0.02;
+        float N     = ParticleDensity * 100.0 + 20.0;  // 20–120 cells
+        float glow  = ParticleGlow  * 8.0  + 2.0;
+        float drift = ParticleDrift * 0.35;
+        float speed = ParticleDrift * 1.5  + 0.05;
+        // DepthNear slider = depth threshold: particles only appear where depth > this
+        float thresh = DepthNear;
 
-        vec2 cellF  = uv * N;
-        vec2 cell   = floor(cellF);
-        vec2 cellUV = fract(cellF);
-        vec2 ctr    = (cell + 0.5) / N;
+        vec2 cellF = uv * N;
+        vec2 cell  = floor(cellF);
 
-        // ── Depth at cell centre ──────────────────────────────────────────
-        float d = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
-        if (Invert == 1) d = 1.0 - d;
+        float bright = 0.0;
+        float wDepth = 0.0;
+        float wTotal = 0.0;
 
-        // ── Silhouette edge detection (neighbour cells, ±2 steps) ─────────
-        float step = 2.0 / N;
-        float dR = texture(DepthTex, vec2(clamp(ctr.x+step,0.001,0.999), 1.0-ctr.y)).r;
-        float dL = texture(DepthTex, vec2(clamp(ctr.x-step,0.001,0.999), 1.0-ctr.y)).r;
-        float dU = texture(DepthTex, vec2(ctr.x, 1.0-clamp(ctr.y+step,0.001,0.999))).r;
-        float dD = texture(DepthTex, vec2(ctr.x, 1.0-clamp(ctr.y-step,0.001,0.999))).r;
-        float edge     = length(vec2(dR - dL, dU - dD));
-        float edgeMask = smoothstep(0.15, 0.45, edge);
+        // ── 3×3 neighbour lookup: breaks grid, allows glow to spill ────────
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                vec2 nc  = cell + vec2(float(dx), float(dy));
+                vec2 ctr = clamp((nc + 0.5) / N, 0.001, 0.999);
 
-        // ── Particle size: near = big, far = small ─────────────────────────
-        float pR = ParticleSize * (0.15 + d * 0.85);  // 0.15×size (far) → 1.0×size (near)
+                float d = texture(DepthTex, vec2(ctr.x, 1.0 - ctr.y)).r;
+                if (Invert == 1) d = 1.0 - d;
+                if (d < thresh) continue;   // skip background cells
 
-        // ── Drift animation ───────────────────────────────────────────────
-        vec2  rnd  = hash2(cell);
-        float t    = Time * speed;
-        vec2  dOff = drift * vec2(
-            sin(t * 1.13 + rnd.x * 6.2832),
-            cos(t * 0.87 + rnd.y * 6.2832)
-        );
-        vec2 pCenter = clamp(vec2(0.5) + dOff * 0.5, 0.05, 0.95);
+                // Fully random particle position in [0,1]×[0,1] within cell
+                vec2 rnd = hash2(nc);
+                float t  = Time * speed;
+                vec2 pPos = rnd + drift * vec2(
+                    sin(t * 1.13 + rnd.x * 6.2832),
+                    cos(t * 0.87 + rnd.y * 6.2832)
+                );
 
-        vec2  delta = cellUV - pCenter;
-        delta.x    *= Aspect;
-        float dist  = length(delta);  // cell-UV space, no * N
+                // Current pixel position in this neighbour's cell space
+                vec2 pixPos = cellF - nc;
+                vec2 delta  = pixPos - pPos;
+                delta.x    *= Aspect;
+                float dist  = length(delta);
 
-        float core     = 1.0 - smoothstep(pR * 0.4, pR, dist);
-        float glowFall = exp(-dist * dist / max(pR * pR * 0.5, 0.001));
-        float brightness = (core + glowFall * glow) * edgeMask;
+                // Near = big, Far = small  (5× size range)
+                float pR       = ParticleSize * (0.08 + d * 0.42);
+                float core     = 1.0 - smoothstep(pR * 0.3, pR, dist);
+                float glowRing = exp(-dist * dist / max(pR * pR * 0.6, 0.001));
+                float b        = core + glowRing * glow;
 
-        vec3 nearCol = vec3(1.0, 0.3, 0.8);   // pink  = near
-        vec3 farCol  = vec3(0.3, 0.1, 1.0);   // purple = far
-        vec3 col = mix(farCol, nearCol, d);
+                bright += b;
+                wDepth += d * b;
+                wTotal += b;
+            }
+        }
 
-        fragColor = vec4(col * brightness, 1.0);
+        float avgD   = (wTotal > 0.001) ? wDepth / wTotal : 0.0;
+        vec3 nearCol = vec3(1.0, 0.3, 0.8);
+        vec3 farCol  = vec3(0.3, 0.1, 1.0);
+        vec3 col     = mix(farCol, nearCol, avgD);
+        fragColor    = vec4(col * min(bright, 2.5), 1.0);
         return;
     }
 
