@@ -65,7 +65,6 @@ story.append(Spacer(1, 0.5*cm))
 story.append(Paragraph("安裝說明", h2_style))
 
 install_steps = [
-    ("系統需求", "Windows 10/11 x64、支援 DirectX 12 的 GPU（無 GPU 可退回 CPU 模式）"),
     ("下載插件", "從 GitHub Actions Artifacts 下載最新 AIDepthMap 壓縮包"),
     ("解壓縮檔案", "解壓後應包含：AIDepthMap.dll、onnxruntime.dll、DirectML.dll、glew32.dll、depth_anything_v2_vits.onnx"),
     ("放置插件", "將所有檔案複製至 Resolume 插件資料夾，例如：\nC:\\Users\\<使用者>\\Documents\\Resolume Avenue\\Extra Effects\\"),
@@ -94,7 +93,7 @@ story.append(install_table)
 story.append(Spacer(1, 0.5*cm))
 
 # ── Feature Table ──────────────────────────────────────────────────────────
-story.append(Paragraph("功能說明", h2_style))
+story.append(Paragraph("功能介紹", h2_style))
 
 features = [
     ("Quality",       "推理品質與效能權衡，低值跳幀省資源，高值每幀都推理"),
