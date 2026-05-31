@@ -1,11 +1,11 @@
-name: Build AI Depth DLL
+name: Build AI Depth Plugin
 
 on:
   push:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-2022
 
     steps:
@@ -19,24 +19,19 @@ jobs:
 
       - name: Download ONNX Runtime with DirectML (NuGet)
         run: |
-          # 1. ORT DirectML package (headers + DML-enabled onnxruntime.dll/.lib)
           $ortUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.20.1/microsoft.ml.onnxruntime.directml.1.20.1.nupkg"
           Invoke-WebRequest -Uri $ortUrl -OutFile "ort-dml.zip"
           Expand-Archive -Path "ort-dml.zip" -DestinationPath "ort-dml-pkg" -Force
 
-          # 2. DirectML runtime (separate package – DirectML.dll lives here)
           $dmlUrl = "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg"
           Invoke-WebRequest -Uri $dmlUrl -OutFile "directml.zip"
           Expand-Archive -Path "directml.zip" -DestinationPath "directml-pkg" -Force
 
-          # Normalise into the layout CMakeLists.txt expects
           New-Item -ItemType Directory -Force "onnxruntime/include"
           New-Item -ItemType Directory -Force "onnxruntime/lib"
 
-          # Headers (dml_provider_factory.h is here)
           Copy-Item "ort-dml-pkg/build/native/include/*" "onnxruntime/include/" -Recurse -Force
 
-          # Locate x64 files – filter by path to avoid picking up ARM64 variants
           $lib = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.lib" | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
           $dll = (Get-ChildItem "ort-dml-pkg" -Recurse -Filter "onnxruntime.dll" | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
           $dml = (Get-ChildItem "directml-pkg" -Recurse -Filter "DirectML.dll"   | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1).FullName
@@ -66,5 +61,50 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AIDepthMap
+          name: AIDepthMap-Windows
+          path: build/Release/
+
+  build-macos:
+    runs-on: macos-14   # Apple Silicon (arm64)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone FFGL SDK
+        run: git clone --depth 1 https://github.com/resolume/ffgl.git ../ffgl
+
+      - name: Install GLEW
+        run: brew install glew
+
+      - name: Download ONNX Runtime (macOS universal)
+        run: |
+          ORT_VER="1.20.1"
+          curl -L "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VER}/onnxruntime-osx-universal2-${ORT_VER}.tgz" \
+            -o ort-mac.tgz
+          tar -xzf ort-mac.tgz
+          mkdir -p onnxruntime/include onnxruntime/lib
+          cp -r onnxruntime-osx-universal2-${ORT_VER}/include/* onnxruntime/include/
+          cp    onnxruntime-osx-universal2-${ORT_VER}/lib/libonnxruntime.dylib onnxruntime/lib/
+
+      - name: Download Depth Anything V2 Small ONNX model
+        run: |
+          curl -L "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx" \
+            -o depth_anything_v2_vits.onnx
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DORT_DIR="${{ github.workspace }}/onnxruntime"
+
+      - name: Build Release
+        run: cmake --build build --config Release
+
+      - name: Stage model
+        run: cp depth_anything_v2_vits.onnx build/Release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIDepthMap-macOS
           path: build/Release/

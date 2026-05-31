@@ -1,10 +1,14 @@
+#ifdef _WIN32
 // Windows.h MUST be first — FFGLSDK.h/GLEW would otherwise include it with
 // WIN32_LEAN_AND_MEAN, stripping COM/OLE types (MSG, LPMSG) that DML needs.
 // NOMINMAX prevents Windows from defining min/max macros that break std::min/max.
-#define NOMINMAX
-#include <Windows.h>
-#if ORT_DML_AVAILABLE
-#  include <dml_provider_factory.h>   // safe: COM types already defined above
+#  define NOMINMAX
+#  include <Windows.h>
+#  if ORT_DML_AVAILABLE
+#    include <dml_provider_factory.h>
+#  endif
+#else
+#  include <dlfcn.h>
 #endif
 #include "Plugin.h"
 #include <algorithm>
@@ -30,7 +34,10 @@ static CFFGLPluginInfo PluginInfo(
 // ─────────────────────────────────────────────────────────────────────────────
 static void* _addrAnchor() { return (void*)_addrAnchor; }
 
-static std::wstring GetDllDir() {
+// Returns the directory containing this plugin binary, with trailing separator.
+// Uses ORTCHAR_T so the result can be passed directly to Ort::Session.
+static std::basic_string<ORTCHAR_T> GetPluginDir() {
+#ifdef _WIN32
     HMODULE hMod = nullptr;
     GetModuleHandleExW(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -41,6 +48,15 @@ static std::wstring GetDllDir() {
     std::wstring path(buf);
     auto sep = path.rfind(L'\\');
     return (sep != std::wstring::npos) ? path.substr(0, sep + 1) : L".\\";
+#else
+    Dl_info info{};
+    if (dladdr((void*)_addrAnchor, &info) && info.dli_fname) {
+        std::string path(info.dli_fname);
+        auto sep = path.rfind('/');
+        return (sep != std::string::npos) ? path.substr(0, sep + 1) : "./";
+    }
+    return "./";
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -402,7 +418,7 @@ bool AIDepthMap::loadONNX() {
         opts.SetIntraOpNumThreads(2);       // CPU-only build
 #endif
 
-        std::wstring modelPath = GetDllDir() + L"depth_anything_v2_vits.onnx";
+        auto modelPath = GetPluginDir() + ORT_TSTR("depth_anything_v2_vits.onnx");
         m_ortSess = new Ort::Session(*m_ortEnv, modelPath.c_str(), opts);
 
         Ort::AllocatorWithDefaultOptions alloc;

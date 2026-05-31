@@ -15,12 +15,24 @@ file(GLOB_RECURSE FFGL_SRCS
 
 # ── ONNX Runtime ──────────────────────────────────────────────────────────────
 set(ORT_DIR "${CMAKE_SOURCE_DIR}/onnxruntime" CACHE PATH "ONNX Runtime root")
-set(ORT_INC  "${ORT_DIR}/include")
-set(ORT_LIB  "${ORT_DIR}/lib/onnxruntime.lib")   # import library
-set(ORT_DLL  "${ORT_DIR}/lib/onnxruntime.dll")   # runtime DLL
-set(DML_DLL  "${ORT_DIR}/lib/DirectML.dll")      # DirectML runtime
+set(ORT_INC "${ORT_DIR}/include")
 
-# ── Plugin DLL ────────────────────────────────────────────────────────────────
+if(WIN32)
+    set(ORT_LIB  "${ORT_DIR}/lib/onnxruntime.lib")
+    set(ORT_DLL  "${ORT_DIR}/lib/onnxruntime.dll")
+    set(DML_DLL  "${ORT_DIR}/lib/DirectML.dll")
+    set(PLUGIN_SUFFIX ".dll")
+    set(PLUGIN_RUNTIME_DIR RUNTIME_OUTPUT_DIRECTORY_RELEASE)
+    set(OPENGL_LIBS opengl32)
+else()
+    set(ORT_LIB  "${ORT_DIR}/lib/libonnxruntime.dylib")
+    set(ORT_DLL  "${ORT_DIR}/lib/libonnxruntime.dylib")
+    set(PLUGIN_SUFFIX ".bundle")
+    set(PLUGIN_RUNTIME_DIR LIBRARY_OUTPUT_DIRECTORY)
+    set(OPENGL_LIBS "-framework OpenGL")
+endif()
+
+# ── Plugin binary ─────────────────────────────────────────────────────────────
 add_library(AIDepthMap SHARED
     Plugin.cpp
     Plugin.h
@@ -36,32 +48,36 @@ target_include_directories(AIDepthMap PRIVATE
 
 target_link_libraries(AIDepthMap PRIVATE
     GLEW::GLEW
-    opengl32
+    ${OPENGL_LIBS}
     "${ORT_LIB}"
 )
 
+if(APPLE)
+    target_link_libraries(AIDepthMap PRIVATE "-ldl")
+endif()
+
 set_target_properties(AIDepthMap PROPERTIES
     PREFIX ""
-    SUFFIX ".dll"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"
+    SUFFIX "${PLUGIN_SUFFIX}"
+    "${PLUGIN_RUNTIME_DIR}" "${CMAKE_BINARY_DIR}/Release"
 )
 
-# ── DirectML detection ────────────────────────────────────────────────────────
-if(EXISTS "${ORT_INC}/dml_provider_factory.h")
+# ── DirectML detection (Windows only) ────────────────────────────────────────
+if(WIN32 AND EXISTS "${ORT_INC}/dml_provider_factory.h")
     message(STATUS "DirectML header found – GPU inference enabled")
     target_compile_definitions(AIDepthMap PRIVATE ORT_DML_AVAILABLE=1)
 else()
-    message(STATUS "DirectML header not found – CPU inference only")
+    message(STATUS "DirectML not available – CPU inference only")
     target_compile_definitions(AIDepthMap PRIVATE ORT_DML_AVAILABLE=0)
 endif()
 
-# ── Stage DLLs next to the plugin ────────────────────────────────────────────
+# ── Stage runtime libraries next to the plugin ────────────────────────────────
 add_custom_command(TARGET AIDepthMap POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${ORT_DLL}" "$<TARGET_FILE_DIR:AIDepthMap>"
-    COMMENT "Staging onnxruntime.dll"
+    COMMENT "Staging onnxruntime library"
 )
-if(EXISTS "${DML_DLL}")
+if(WIN32 AND EXISTS "${DML_DLL}")
     add_custom_command(TARGET AIDepthMap POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DML_DLL}" "$<TARGET_FILE_DIR:AIDepthMap>"
