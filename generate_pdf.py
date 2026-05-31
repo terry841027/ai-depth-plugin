@@ -49,6 +49,37 @@ row_odd_bg  = colors.white
 
 story = []
 
+# ── Installation ───────────────────────────────────────────────────────────
+story.append(Paragraph("安裝說明", h2_style))
+
+install_steps = [
+    ("下載插件", "從 GitHub Actions Artifacts 下載最新 AIDepthMap 壓縮包"),
+    ("解壓縮檔案", "解壓後應包含：AIDepthMap.dll、onnxruntime.dll、DirectML.dll、glew32.dll、depth_anything_v2_vits.onnx"),
+    ("放置插件", "將所有檔案複製至 Resolume 插件資料夾，例如：\nC:\\Users\\<使用者>\\Documents\\Resolume Avenue\\Extra Effects\\"),
+    ("啟動 Resolume", "重新啟動 Resolume，在 Effects 面板搜尋「AI Depth Map」即可使用"),
+    ("GPU 推理（選用）", "插件預設啟用 DirectML GPU 加速，若顯卡不支援會自動切換為 CPU 模式，無需額外設定"),
+]
+
+install_data = [[cell("步驟"), cell("說明")]]
+for step, desc in install_steps:
+    install_data.append([cell(f"▸ {step}"), cell(desc)])
+
+install_table = Table(install_data, colWidths=[4*cm, 13*cm])
+install_table.setStyle(TableStyle([
+    ("BACKGROUND",  (0,0), (-1,0),  header_bg),
+    ("TEXTCOLOR",   (0,0), (-1,0),  colors.white),
+    ("FONTNAME",    (0,0), (-1,-1), cjk_font),
+    ("FONTSIZE",    (0,0), (-1,-1), 9),
+    ("ROWBACKGROUNDS", (0,1), (-1,-1), [row_even_bg, row_odd_bg]),
+    ("GRID",        (0,0), (-1,-1), 0.4, colors.HexColor("#c0c8e0")),
+    ("VALIGN",      (0,0), (-1,-1), "TOP"),
+    ("TOPPADDING",  (0,0), (-1,-1), 5),
+    ("BOTTOMPADDING",(0,0),(-1,-1), 5),
+    ("LEFTPADDING", (0,0), (-1,-1), 6),
+]))
+story.append(install_table)
+story.append(Spacer(1, 0.5*cm))
+
 # ── Feature Table ──────────────────────────────────────────────────────────
 story.append(Paragraph("功能介紹", h2_style))
 
